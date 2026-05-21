@@ -1,7 +1,13 @@
 use std::{collections::BTreeMap, path::Path};
 
+use bpaf::Parser;
 use cargo_metadata::{MetadataCommand, PackageId};
 use tokei::Languages;
+
+struct Args {
+    top: usize,
+    metadata_args: Vec<String>,
+}
 
 fn main() {
     let mut args: Vec<_> = std::env::args().skip(1).collect();
@@ -9,9 +15,33 @@ fn main() {
         args.remove(0);
     }
 
+    let top = bpaf::long("top")
+        .short('t')
+        .argument::<usize>("N")
+        .help("Show the top N largest dependencies (Default: 20)")
+        .fallback(20);
+    let metadata_args = bpaf::any::<String, _, _>("cargo metadata args", |s| {
+        if s == "--help" || s == "-h" {
+            // if we don't skip these explicitly, they will be passed to cargo metadata
+            None
+        } else {
+            Some(s)
+        }
+    })
+    .help("Any additional arguments will be passed to cargo metadata. Examples: --no-default-features --features=... --filter-platform=...")
+    .many();
+    let parser = bpaf::construct!(Args { top, metadata_args })
+        .to_options()
+        .descr("Counts the lines of code across your entire dependency tree in a Cargo project.");
+
+    let parsed_args = parser.run_inner(args.as_slice()).unwrap_or_else(|err| {
+        err.print_message(100);
+        std::process::exit(err.exit_code())
+    });
+
     // TODO: rewrite --target into --filter-platform, other similar stuff
     let metadata = MetadataCommand::new()
-        .other_options(args) // forwards our own arguments for feature selection, --offline etc
+        .other_options(parsed_args.metadata_args) // forwards our own arguments for feature selection, --offline etc
         .verbose(true) // forwards errors to stdout
         .exec()
         .unwrap();
@@ -45,8 +75,8 @@ fn main() {
 
     // print N largest dependencies
     {
+        let n = parsed_args.top;
         // satisfy the borrow checker
-        let n = 20;
         println!("Top {n} largest dependencies:");
         for (pkg_id, stats) in top_n(&reports, n) {
             let pkg = metadata.packages.iter().find(|p| p.id == *pkg_id).unwrap();
